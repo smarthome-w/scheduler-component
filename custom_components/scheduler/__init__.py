@@ -171,6 +171,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         async_service_enable_all
     )
 
+    async def async_service_reload_storage(service):
+        """Reload scheduler storage from disk."""
+        await coordinator.async_reload_storage()
+
+    hass.services.async_register(
+        const.DOMAIN,
+        const.SERVICE_RELOAD_STORAGE,
+        async_service_reload_storage
+    )
+
     return True
 
 
@@ -444,3 +454,11 @@ class SchedulerCoordinator(DataUpdateCoordinator):
         """disables all schedules"""
         for schedule in self.hass.data[const.DOMAIN]["schedules"].values():
             await schedule.async_turn_off()
+
+    async def async_reload_storage(self):
+        """Reload scheduler storage from disk."""
+        _LOGGER.info("Reloading scheduler storage from disk")
+        await self.store.async_load()
+        _LOGGER.info("Scheduler storage reloaded successfully")
+        # Notify listeners that storage has been reloaded
+        async_dispatcher_send(self.hass, const.EVENT_STARTED)

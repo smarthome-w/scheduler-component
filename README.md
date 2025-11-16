@@ -15,7 +15,7 @@ Any entity in HA can be used for making a scheduler entity, together with any se
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=nielsfaber&repository=scheduler-component&category=integration)
 
-Make sure you have HACS installed. If you don't, run `wget -O - https://get.hacs.xyz | bash -` in HA.  
+Make sure you have HACS installed. If you don't, run `wget -O - https://get.hacs.xyz | bash -` in HA.
 Choose Integrations under HACS. Click the '+' button on the bottom of the page, search for "scheduler component", choose it, and click install in HACS.
 
 #### Option 2: Manual
@@ -70,7 +70,7 @@ The entities in HA are created from the `scheduler.storage` file upon (re)starti
 ## Scheduler entities
 Entities that are part of the scheduler integrations will have entity id following according to pattern `switch.schedule_<token>`, where `<token>` is a randomly generated 6 digit code.
 
-You can treat these entities in the same way as other `switch` entities in HA, meaning that you could place them in any Lovelace card for quick access. 
+You can treat these entities in the same way as other `switch` entities in HA, meaning that you could place them in any Lovelace card for quick access.
 
 ### States
 A scheduler entity can have the following states:
@@ -87,7 +87,7 @@ A scheduler entity can have the following states:
 Since schedules follow the `switch` platform, you can use the `switch.turn_on` and `switch.turn_off` services to enable and disable schedules.
 
 In addition, the following services are available.
-Note that this component is meant to be used together with the [Lovelace scheduler card](https://github.com/nielsfaber/scheduler-card), which handles some of the data validation. 
+Note that this component is meant to be used together with the [Lovelace scheduler card](https://github.com/nielsfaber/scheduler-card), which handles some of the data validation.
 
 
 #### scheduler.add
@@ -105,12 +105,12 @@ Add a new scheduler entity.
 
 #### scheduler.edit
 Update the configuration of an existing scheduler entity.
-Overwrites the old value. 
+Overwrites the old value.
 
 The service parameters are the same as for `scheduler.add`, except that the `entity_id` needs to be provided of the schedule which needs to be modified.
 
 Note that only the parameters that should be changed have to be provided, if a parameter is not provided, the previous value will be kept.
-                                                                                                                                                 
+
 #### scheduler.remove
 Remove a scheduler entity.
 
@@ -118,7 +118,7 @@ Remove a scheduler entity.
 | ----------- | ------ | ----------------- | --------------------------------- | ----------------------------- |
 | `entity_id` | string | required          | Entity ID of the scheduler entity | e.g. `switch.schedule_123456` |
 
-                                                                     
+
 #### scheduler.copy
 Duplicate a scheduler entity.
 
@@ -129,7 +129,12 @@ Duplicate a scheduler entity.
 
 
 
+#### scheduler.reload_storage
+
+Reload scheduler storage from disk to refresh data.
+
 #### scheduler.run_action
+
 Manually trigger a schedule.
 
 | field             | Type    | Optional/required | Description                                                      | Remarks                                                                                                                                                                                                                                                                                                                     |
@@ -155,7 +160,7 @@ A timeslot defines the timepoints on which a schedule is triggered, together wit
 **Note**:
 
 To guarantee compatibility with the scheduler-card, the following conditions need to be met:
-1. A schedule must exist of either: 
+1. A schedule must exist of either:
   <ul>
     <li>A single timeslot with only <code>start</code> time</li>
     <li>A list timeslots which ALL have <code>start</code>  and <code>stop</code> time, which are non overlapping and are not relative to sun.</li>
@@ -165,7 +170,7 @@ To guarantee compatibility with the scheduler-card, the following conditions nee
 
 
 3. Actions list may only consist of a single service/service_data combination (multiple actions may only have different entity_id).
-  
+
 
 ### Condition
 
@@ -180,7 +185,7 @@ Conditions are currently limited to checking the state of entities.
 
 ### Action
 
-An action is a combination of a HA service with entity_id. 
+An action is a combination of a HA service with entity_id.
 See Developer Tools -> Services in HA for available actions and info on valid parameters.
 
 | Name           | Type   | Optional/required | Description                                        | Remarks                   |
