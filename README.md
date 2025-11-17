@@ -102,6 +102,13 @@ Add a new scheduler entity.
 | `repeat_type` | string | optional          | Control repeat behaviour after triggering.                            | Valid values are: <ul><li>`repeat`: (default value) schedule will loop after triggering</li><li>`single`: schedule will delete itself after triggering</li><li>`pause`: schedule will turn off after triggering, can be reset by turning on</li></ul> |
 | `name`        | string | optional          | Friendly name for the schedule entity.                                | The name will also be used for the entity_id of the schedule.<br> Default value is `Schedule #abcdef                     ` where `abcdef`=random generated sequence.                                                                                  |
 
+#### scheduler.delete_schedule_by_id
+
+Remove a scheduler entity by id.
+
+| field       | Type   | Optional/required | Description                       | Remarks                       |
+| ----------- | ------ | ----------------- | --------------------------------- | ----------------------------- |
+| `schedule_id` | string | required          | Schedule ID | e.g. `94a36e` | |
 
 #### scheduler.edit
 Update the configuration of an existing scheduler entity.
