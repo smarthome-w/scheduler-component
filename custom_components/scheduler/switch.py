@@ -78,6 +78,11 @@ async def async_setup_entry(hass, _config_entry, async_add_entities):
         schedule_id = schedule.schedule_id
         name = schedule.name
 
+        # Check if entity already exists to prevent duplicates
+        if schedule_id in hass.data[const.DOMAIN]["schedules"]:
+            _LOGGER.debug(f"Schedule entity {schedule_id} already exists, skipping creation")
+            return
+
         if name and len(slugify(name)):
             entity_id = "{}.schedule_{}".format(PLATFORM, slugify(name))
         else:
@@ -165,6 +170,15 @@ class ScheduleEntity(ToggleEntity):
         if id != self.schedule_id:
             return
 
+        # Safety check: ensure timer handler is initialized
+        if not hasattr(self, '_timer_handler') or self._timer_handler is None:
+            _LOGGER.warning(f"Schedule entity {self.schedule_id} has no timer handler, attempting to initialize")
+            try:
+                await self._ensure_handlers_initialized()
+            except Exception as e:
+                _LOGGER.error(f"Failed to initialize handlers for schedule {self.schedule_id}: {e}")
+                return
+
         self._next_entries = self._timer_handler.slot_queue
         self._timestamps = list(
             map(
@@ -173,14 +187,17 @@ class ScheduleEntity(ToggleEntity):
         )
         if self._current_slot is not None and self._timer_handler.current_slot is None:
             # we are leaving a timeslot, stop execution of actions
-            if (
-                len(self.schedule[const.ATTR_TIMESLOTS]) == 1
-                and self.schedule[const.ATTR_REPEAT_TYPE] == const.REPEAT_TYPE_REPEAT
-            ):
-                # allow unavailable entities to restore within 9 mins (+1 minute of triggered duration)
-                await self._action_handler.async_empty_queue(restore_time=9)
+            if hasattr(self, '_action_handler') and self._action_handler is not None:
+                if (
+                    len(self.schedule[const.ATTR_TIMESLOTS]) == 1
+                    and self.schedule[const.ATTR_REPEAT_TYPE] == const.REPEAT_TYPE_REPEAT
+                ):
+                    # allow unavailable entities to restore within 9 mins (+1 minute of triggered duration)
+                    await self._action_handler.async_empty_queue(restore_time=9)
+                else:
+                    await self._action_handler.async_empty_queue()
             else:
-                await self._action_handler.async_empty_queue()
+                _LOGGER.warning(f"Schedule entity {self.schedule_id} has no action handler for cleanup")
 
             if self._current_slot == (
                 len(self.schedule[const.ATTR_TIMESLOTS]) - 1
@@ -268,16 +285,21 @@ class ScheduleEntity(ToggleEntity):
 
         if self._state not in [STATE_OFF, const.STATE_COMPLETED]:
 
-            self._current_slot = self._timer_handler.current_slot
-            if self._current_slot is not None:
-                _LOGGER.debug(
-                    "Schedule {} is triggered, proceed with actions".format(
-                        self.schedule_id
+            if hasattr(self, '_timer_handler') and self._timer_handler is not None:
+                self._current_slot = self._timer_handler.current_slot
+                if self._current_slot is not None and hasattr(self, '_action_handler') and self._action_handler is not None:
+                    _LOGGER.debug(
+                        "Schedule {} is triggered, proceed with actions".format(
+                            self.schedule_id
+                        )
                     )
-                )
-                await self._action_handler.async_queue_actions(
-                    self.schedule[const.ATTR_TIMESLOTS][self._current_slot]
-                )
+                    await self._action_handler.async_queue_actions(
+                        self.schedule[const.ATTR_TIMESLOTS][self._current_slot]
+                    )
+                else:
+                    _LOGGER.warning(f"Schedule entity {self.schedule_id} cannot execute actions - missing handlers")
+            else:
+                _LOGGER.warning(f"Schedule entity {self.schedule_id} has no timer handler in async_timer_finished")
 
         @callback
         async def async_trigger_finished(_now):
@@ -315,9 +337,13 @@ class ScheduleEntity(ToggleEntity):
     @property
     def name(self) -> str:
         """Return the name of the entity."""
-        if self.schedule and self.schedule[ATTR_NAME]:
+        if self.schedule and self.schedule.get(ATTR_NAME):
             return self.schedule[ATTR_NAME]
         else:
+            # For broken entities, add indication
+            is_broken = not hasattr(self, '_timer_handler') or self._timer_handler is None
+            if is_broken:
+                return "[BROKEN] Schedule #{}".format(self.schedule_id)
             return "Schedule #{}".format(self.schedule_id)
 
     @property
@@ -328,7 +354,10 @@ class ScheduleEntity(ToggleEntity):
     @property
     def state(self):
         """Return the state of the entity."""
-        return self._state
+        # For broken entities, return a safe state
+        if not hasattr(self, '_timer_handler') or self._timer_handler is None:
+            return STATE_OFF
+        return self._state if self._state is not None else STATE_OFF
 
     @property
     def icon(self):
@@ -342,50 +371,74 @@ class ScheduleEntity(ToggleEntity):
 
     @property
     def weekdays(self):
-        return self.schedule[const.ATTR_WEEKDAYS] if self.schedule else None
+        if self.schedule and const.ATTR_WEEKDAYS in self.schedule:
+            return self.schedule[const.ATTR_WEEKDAYS]
+        return ["daily"]  # Default value for broken entities
 
     @property
     def entities(self):
         entities = []
         if not self.schedule:
-            return
-        for timeslot in self.schedule[const.ATTR_TIMESLOTS]:
-            for action in timeslot[const.ATTR_ACTIONS]:
-                if action[ATTR_ENTITY_ID] and action[ATTR_ENTITY_ID] not in entities:
-                    entities.append(action[ATTR_ENTITY_ID])
+            return entities
+
+        try:
+            for timeslot in self.schedule.get(const.ATTR_TIMESLOTS, []):
+                for action in timeslot.get(const.ATTR_ACTIONS, []):
+                    entity_id = action.get(ATTR_ENTITY_ID)
+                    if entity_id and entity_id not in entities:
+                        entities.append(entity_id)
+        except (TypeError, AttributeError):
+            # Handle broken schedule data
+            pass
 
         return entities
 
     @property
     def actions(self):
         if not self.schedule:
-            return
-        return [
-            {
-                CONF_SERVICE: timeslot["actions"][0][CONF_SERVICE],
-            }
-            if not timeslot["actions"][0][ATTR_SERVICE_DATA]
-            else {
-                CONF_SERVICE: timeslot["actions"][0][CONF_SERVICE],
-                CONF_SERVICE_DATA: timeslot["actions"][0][ATTR_SERVICE_DATA],
-            }
-            for timeslot in self.schedule[const.ATTR_TIMESLOTS]
-        ]
+            return []
+
+        try:
+            actions = []
+            for timeslot in self.schedule.get(const.ATTR_TIMESLOTS, []):
+                timeslot_actions = timeslot.get(const.ATTR_ACTIONS, [])
+                if timeslot_actions and len(timeslot_actions) > 0:
+                    action = timeslot_actions[0]
+                    service = action.get(CONF_SERVICE, "unknown")
+                    service_data = action.get(ATTR_SERVICE_DATA)
+
+                    if service_data:
+                        actions.append({
+                            CONF_SERVICE: service,
+                            CONF_SERVICE_DATA: service_data,
+                        })
+                    else:
+                        actions.append({
+                            CONF_SERVICE: service,
+                        })
+            return actions
+        except (TypeError, AttributeError, KeyError):
+            # Handle broken schedule data
+            return []
 
     @property
     def timeslots(self):
         timeslots = []
         if not self.schedule:
-            return
-        for timeslot in self.schedule[const.ATTR_TIMESLOTS]:
-            if timeslot[const.ATTR_STOP]:
-                timeslots.append(
-                    "{} - {}".format(
-                        timeslot[const.ATTR_START], timeslot[const.ATTR_STOP]
-                    )
-                )
-            else:
-                timeslots.append(timeslot[const.ATTR_START])
+            return timeslots
+
+        try:
+            for timeslot in self.schedule.get(const.ATTR_TIMESLOTS, []):
+                start = timeslot.get(const.ATTR_START, "00:00")
+                stop = timeslot.get(const.ATTR_STOP)
+                if stop:
+                    timeslots.append(f"{start} - {stop}")
+                else:
+                    timeslots.append(start)
+        except (TypeError, AttributeError):
+            # Handle broken schedule data
+            timeslots = ["broken"]
+
         return timeslots
 
     @property
@@ -395,6 +448,9 @@ class ScheduleEntity(ToggleEntity):
     @property
     def state_attributes(self):
         """Return the data of the entity."""
+        # Check if entity is broken
+        is_broken = not hasattr(self, '_timer_handler') or self._timer_handler is None
+
         output = {
             "weekdays": self.weekdays,
             "timeslots": self.timeslots,
@@ -406,7 +462,11 @@ class ScheduleEntity(ToggleEntity):
             if len(self._next_entries)
             else None,
             "tags": self.tags,
+            "broken_entity": is_broken,
         }
+
+        if is_broken:
+            output["error"] = "Entity missing timer/action handlers - can be safely deleted"
 
         return output
 
@@ -431,6 +491,10 @@ class ScheduleEntity(ToggleEntity):
         data = copy.copy(self.schedule)
         if not data:
             data = {}
+
+        # Check if entity is broken
+        is_broken = not hasattr(self, '_timer_handler') or self._timer_handler is None
+
         data.update(
             {
                 "next_entries": self._next_entries,
@@ -438,9 +502,28 @@ class ScheduleEntity(ToggleEntity):
                 "name": self.schedule[ATTR_NAME] if self.schedule else "",
                 "entity_id": self.entity_id,
                 "tags": self.tags,
+                "broken_entity": is_broken,
             }
         )
+
+        if is_broken:
+            data["error"] = "Entity missing timer/action handlers - can be safely deleted"
+
         return data
+
+    async def _ensure_handlers_initialized(self):
+        """Ensure timer and action handlers are properly initialized."""
+        if not hasattr(self, '_timer_handler') or self._timer_handler is None:
+            self._timer_handler = TimerHandler(self.hass, self.schedule_id)
+
+        if not hasattr(self, '_action_handler') or self._action_handler is None:
+            self._action_handler = ActionHandler(self.hass, self.schedule_id)
+
+        # Ensure schedule data is loaded
+        if self.schedule is None:
+            store = await async_get_registry(self.hass)
+            self.schedule = store.async_get_schedule(self.schedule_id)
+            self._tags = self.coordinator.async_get_tags_for_schedule(self.schedule_id)
 
     async def async_added_to_hass(self):
         """Connect to dispatcher listening for entity data notifications."""
@@ -448,20 +531,20 @@ class ScheduleEntity(ToggleEntity):
         self.schedule = store.async_get_schedule(self.schedule_id)
         self._tags = self.coordinator.async_get_tags_for_schedule(self.schedule_id)
 
-        self._timer_handler = TimerHandler(self.hass, self.schedule_id)
-        self._action_handler = ActionHandler(self.hass, self.schedule_id)
+        await self._ensure_handlers_initialized()
 
     async def async_turn_off(self):
         """turn off a schedule"""
-        if self.schedule[const.ATTR_ENABLED]:
-            await self._action_handler.async_empty_queue()
+        if self.schedule and self.schedule[const.ATTR_ENABLED]:
+            if hasattr(self, '_action_handler') and self._action_handler is not None:
+                await self._action_handler.async_empty_queue()
             self.coordinator.async_edit_schedule(
                 self.schedule_id, {const.ATTR_ENABLED: False}
             )
 
     async def async_turn_on(self):
         """turn on a schedule"""
-        if not self.schedule[const.ATTR_ENABLED]:
+        if self.schedule and not self.schedule[const.ATTR_ENABLED]:
             self.coordinator.async_edit_schedule(
                 self.schedule_id, {const.ATTR_ENABLED: True}
             )
@@ -470,12 +553,36 @@ class ScheduleEntity(ToggleEntity):
         """remove entity from hass."""
         _LOGGER.debug("Schedule {} is removed from hass".format(self.schedule_id))
 
+        # Cancel timer safely
         await self.async_cancel_timer()
-        await self._action_handler.async_empty_queue()
-        await self._timer_handler.async_unload()
 
-        while len(self._listeners):
-            self._listeners.pop()()
+        # Clean up action handler if it exists
+        if hasattr(self, '_action_handler') and self._action_handler is not None:
+            try:
+                await self._action_handler.async_empty_queue()
+            except Exception as e:
+                _LOGGER.warning(f"Error cleaning up action handler for {self.schedule_id}: {e}")
+        else:
+            _LOGGER.debug(f"No action handler to clean up for {self.schedule_id}")
+
+        # Clean up timer handler if it exists
+        if hasattr(self, '_timer_handler') and self._timer_handler is not None:
+            try:
+                await self._timer_handler.async_unload()
+            except Exception as e:
+                _LOGGER.warning(f"Error cleaning up timer handler for {self.schedule_id}: {e}")
+        else:
+            _LOGGER.debug(f"No timer handler to clean up for {self.schedule_id}")
+
+        # Clean up event listeners safely
+        if hasattr(self, '_listeners') and self._listeners:
+            while len(self._listeners):
+                try:
+                    listener = self._listeners.pop()
+                    if callable(listener):
+                        listener()
+                except Exception as e:
+                    _LOGGER.warning(f"Error removing listener for {self.schedule_id}: {e}")
 
         await super().async_will_remove_from_hass()
 
@@ -504,6 +611,15 @@ class ScheduleEntity(ToggleEntity):
 
     async def async_service_run_action(self, time=None, skip_conditions=False):
         """Manually trigger the execution of the actions of a timeslot"""
+
+        # Check if handlers are available
+        if not hasattr(self, '_timer_handler') or self._timer_handler is None:
+            _LOGGER.error(f"Cannot run action for broken entity {self.schedule_id}: missing timer handler")
+            return
+
+        if not hasattr(self, '_action_handler') or self._action_handler is None:
+            _LOGGER.error(f"Cannot run action for broken entity {self.schedule_id}: missing action handler")
+            return
 
         now = dt_util.as_local(dt_util.utcnow())
         if time is not None:

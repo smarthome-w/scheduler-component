@@ -18,6 +18,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_registry import async_get as get_entity_registry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.dispatcher import (
     async_dispatcher_send,
 )
@@ -181,6 +182,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         async_service_reload_storage
     )
 
+    async def async_service_delete_by_id(service):
+        """Delete a schedule by its schedule_id (works for broken entities)."""
+        schedule_id = service.data.get("schedule_id")
+        if schedule_id:
+            coordinator.async_delete_schedule(schedule_id)
+            _LOGGER.info(f"Deleted schedule by ID: {schedule_id}")
+        else:
+            _LOGGER.error("No schedule_id provided for deletion")
+
+    hass.services.async_register(
+        const.DOMAIN,
+        const.SERVICE_DELETE_BY_ID,
+        async_service_delete_by_id,
+        schema=vol.Schema({vol.Required("schedule_id"): cv.string})
+    )
+
     return True
 
 
@@ -326,15 +343,42 @@ class SchedulerCoordinator(DataUpdateCoordinator):
     @callback
     def async_delete_schedule(self, schedule_id: str):
         """delete an existing schedule"""
-        if schedule_id not in self.hass.data[const.DOMAIN]["schedules"]:
-            return
-        entity = self.hass.data[const.DOMAIN]["schedules"][schedule_id]
-        entity_registry = get_entity_registry(self.hass)
-        entity_registry.async_remove(entity.entity_id)
-        self.store.async_delete_schedule(schedule_id)
-        self.async_assign_tags_to_schedule(schedule_id, None)
-        self.hass.data[const.DOMAIN]["schedules"].pop(schedule_id, None)
+        _LOGGER.info(f"Attempting to delete schedule: {schedule_id}")
+
+        # Check if entity exists in memory
+        if schedule_id in self.hass.data[const.DOMAIN]["schedules"]:
+            entity = self.hass.data[const.DOMAIN]["schedules"][schedule_id]
+            entity_registry = get_entity_registry(self.hass)
+
+            try:
+                # Clean up entity registry entry
+                entity_registry.async_remove(entity.entity_id)
+                _LOGGER.debug(f"Removed entity {entity.entity_id} from registry")
+            except Exception as e:
+                _LOGGER.warning(f"Error removing entity from registry: {e}")
+
+            # Remove from hass data
+            self.hass.data[const.DOMAIN]["schedules"].pop(schedule_id, None)
+            _LOGGER.debug(f"Removed schedule {schedule_id} from memory")
+        else:
+            _LOGGER.warning(f"Schedule {schedule_id} not found in memory, cleaning up storage only")
+
+        # Always try to clean up storage and tags
+        try:
+            self.store.async_delete_schedule(schedule_id)
+            _LOGGER.debug(f"Removed schedule {schedule_id} from storage")
+        except Exception as e:
+            _LOGGER.warning(f"Error removing from storage: {e}")
+
+        try:
+            self.async_assign_tags_to_schedule(schedule_id, None)
+            _LOGGER.debug(f"Cleaned up tags for schedule {schedule_id}")
+        except Exception as e:
+            _LOGGER.warning(f"Error cleaning up tags: {e}")
+
+        # Notify listeners
         async_dispatcher_send(self.hass, const.EVENT_ITEM_REMOVED, schedule_id)
+        _LOGGER.info(f"Successfully deleted schedule: {schedule_id}")
 
     async def _async_update_data(self):
         """Update data via library."""
@@ -458,7 +502,24 @@ class SchedulerCoordinator(DataUpdateCoordinator):
     async def async_reload_storage(self):
         """Reload scheduler storage from disk."""
         _LOGGER.info("Reloading scheduler storage from disk")
+
+        # Clear existing schedules to prevent duplicates
+        existing_schedules = list(self.hass.data[const.DOMAIN]["schedules"].keys())
+        for schedule_id in existing_schedules:
+            if schedule_id in self.hass.data[const.DOMAIN]["schedules"]:
+                entity = self.hass.data[const.DOMAIN]["schedules"][schedule_id]
+                await entity.async_will_remove_from_hass()
+                del self.hass.data[const.DOMAIN]["schedules"][schedule_id]
+
+        # Reload storage data
         await self.store.async_load()
+
+        # Recreate entities from reloaded data
+        for entry in self.store.schedules.values():
+            schedule_id = entry.schedule_id
+            if schedule_id not in self.hass.data[const.DOMAIN]["schedules"]:
+                async_dispatcher_send(self.hass, const.EVENT_ITEM_CREATED, entry)
+
         _LOGGER.info("Scheduler storage reloaded successfully")
         # Notify listeners that storage has been reloaded
         async_dispatcher_send(self.hass, const.EVENT_STARTED)

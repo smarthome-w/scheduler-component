@@ -54,6 +54,7 @@ SERVICE_COPY = "copy"
 SERVICE_DISABLE_ALL = "disable_all"
 SERVICE_ENABLE_ALL = "enable_all"
 SERVICE_RELOAD_STORAGE = "reload_storage"
+SERVICE_DELETE_BY_ID = "delete_schedule_by_id"
 
 OffsetTimePattern = re.compile(r"^([a-z]+)([-|\+]{1})([0-9:]+)$")
 DatePattern = re.compile(r"^[0-9]+\-[0-9]+\-[0-9]+$")

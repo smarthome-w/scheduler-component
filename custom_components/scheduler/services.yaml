@@ -182,3 +182,15 @@ enable_all:
 reload_storage:
   name: Reload Storage
   description: Reload scheduler storage from disk to refresh data
+
+delete_schedule_by_id:
+  name: Delete Schedule by ID
+  description: Delete a schedule by its schedule_id (works for broken entities)
+  fields:
+    schedule_id:
+      name: Schedule ID
+      description: The schedule_id of the schedule to delete
+      example: "7e1ad5"
+      required: true
+      selector:
+        text:
